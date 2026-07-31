@@ -562,10 +562,6 @@
         tool-name (:tool_name hook-data)
         tool-input (:tool_input hook-data)]
 
-    ;; Always take a snapshot for file change detection
-    (when session-id
-      (file-tracker/snapshot! session-id))
-
     ;; For non-Edit/Write/Bash tools, just allow
     (when-not (#{"Edit" "Write" "Bash"} tool-name)
       (allow-hook "PreToolUse"))
@@ -577,6 +573,13 @@
           (allow-hook "PreToolUse"))
         ;; For emacs commands, allow - emacs handles bracket fixing
         (allow-hook "PreToolUse")))
+
+    ;; Snapshot for file change detection, taken only on the tools that can
+    ;; actually change files. Taking it before the early exits above made every
+    ;; PreToolUse of every tool pay for a full project scan — on a large tree
+    ;; that dominated hook latency, and Bash alone accounts for most hook calls.
+    (when session-id
+      (file-tracker/snapshot! session-id))
 
     ;; For Edit/Write: do bracket validation
     (let [{:keys [file_path content old_string new_string]} tool-input
