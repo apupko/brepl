@@ -27,9 +27,13 @@
       (when (zero? exit)
         ;; git reports paths relative to dir; the walk fallback yields
         ;; dir-prefixed paths, so join here to keep one contract for callers.
-        (->> (str/split out #"\x00")
-             (filter #(re-find source-file-re %))
-             (mapv #(str (fs/path dir %))))))
+        ;; The "." case is spelled out because fs/path would turn "deps.edn"
+        ;; into "./deps.edn", and these strings are both snapshot keys and the
+        ;; paths reported back to the user.
+        (let [join (if (= "." dir) identity #(str (fs/path dir %)))]
+          (->> (str/split out #"\x00")
+               (filter #(re-find source-file-re %))
+               (mapv join)))))
     (catch Exception _ nil)))
 
 (defn- walk-clojure-files
