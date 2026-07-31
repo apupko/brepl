@@ -1840,11 +1840,21 @@ brepl documentation: https://github.com/licht1stein/brepl
         ;; For emacs commands, allow - emacs handles bracket fixing
         (allow-hook "PreToolUse")))
 
-    ;; Snapshot for file change detection, taken only on the tools that can
-    ;; actually change files. Taking it before the early exits above made every
-    ;; PreToolUse of every tool pay for a full project scan — on a large tree
-    ;; that dominated hook latency, and Bash alone accounts for most hook calls.
-    (when session-id
+    ;; Baseline for file change detection. Only the FIRST one is taken here —
+    ;; handle-eval re-snapshots after every reload, so the baseline is already
+    ;; current by the time the next edit arrives.
+    ;;
+    ;; Re-taking it on every Edit/Write is what the earlier version did, and it
+    ;; silently dropped changes: the snapshot rebaselines everything modified
+    ;; since the last PostToolUse, so a .clj touched outside the Edit/Write tools
+    ;; (git checkout, a formatter, another editor) was absorbed into the baseline
+    ;; before detect-changes ever ran, and never reached the REPL. Editing a
+    ;; non-Clojure file was enough to lose it, because this runs before the
+    ;; clojure-file? check below.
+    ;;
+    ;; Skipping it also drops a full project scan from every Edit/Write.
+    (when (and session-id
+               (nil? (file-tracker/load-mtimes session-id)))
       (file-tracker/snapshot! session-id))
 
     ;; For Edit/Write: do bracket validation
