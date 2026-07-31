@@ -1,6 +1,7 @@
 (ns hook-integration-test
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.java.shell :as shell]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [cheshire.core :as json]))
 
@@ -163,6 +164,51 @@
 
         (finally
           (.delete temp-file))))))
+
+(deftest out-of-band-change-survives-non-clojure-edit-test
+  (testing "Scenario: a Clojure file changes outside the Edit/Write tools, then a non-Clojure file is edited"
+    ;; The PreToolUse snapshot establishes the baseline that PostToolUse compares
+    ;; against. Taken on every Edit/Write regardless of file type, it absorbs any
+    ;; change made since the previous PostToolUse — so an edit to a .md file
+    ;; silently re-baselines a pending .clj change and it is never reloaded.
+    (let [session-id (str "test-oob-" (System/currentTimeMillis))
+          tracker-dir (io/file "/tmp" (str "brepl-tracker-" session-id))
+          ;; Must live under cwd: find-clojure-files lists via `git ls-files -co`.
+          tracked (io/file "oob-tracked.clj")
+          other (io/file "oob-other.md")]
+      (try
+        (testing "Given a tracked Clojure file and an established baseline"
+          (spit tracked "(ns oob-tracked)\n(defn f [] 1)\n")
+          (spit other "# doc\n")
+          (run-hook-via-stdin "validate"
+                              (assoc (create-edit-payload (.getPath tracked) "a" "b")
+                                     :session_id session-id))
+          (is (.exists (io/file tracker-dir "mtimes.edn"))
+              "Baseline snapshot should exist after the first validate"))
+
+        (testing "When the Clojure file changes out of band, then a .md file is edited"
+          ;; mtime has millisecond resolution; make sure the change is visible.
+          (Thread/sleep 1100)
+          (spit tracked "(ns oob-tracked)\n(defn f [] 1)\n(defn g [] (+ 1 2)\n")
+          (run-hook-via-stdin "validate"
+                              (assoc (create-edit-payload (.getPath other) "a" "b")
+                                     :session_id session-id)))
+
+        (testing "Then the PostToolUse hook still sees the out-of-band change"
+          (let [result (run-hook-via-stdin "eval"
+                                           (assoc (create-edit-payload (.getPath other) "a" "b")
+                                                  :session_id session-id))
+                reason (get-in result [:response :hookSpecificOutput :permissionDecisionReason])]
+            (is (= 0 (:exit result))
+                "Should exit with code 0")
+            (is (and reason (str/includes? reason "oob-tracked.clj"))
+                "Out-of-band change must be detected, not swallowed by the .md pre-snapshot")))
+
+        (finally
+          (.delete tracked)
+          (.delete other)
+          (doseq [f (or (.listFiles tracker-dir) [])] (.delete f))
+          (.delete tracker-dir))))))
 
 (deftest validate-hook-json-response-format-test
   (testing "Scenario: Validate hook returns Claude Code hookSpecificOutput format"
